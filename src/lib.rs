@@ -1,3 +1,6 @@
+#![deny(invalid_doc_attributes, missing_docs, unused_doc_comments)]
+#![forbid(unsafe_code)]
+#![deny(missing_copy_implementations, missing_debug_implementations)]
 //! # `fsm-lexer`
 //!
 //! A finite state (Mealy) machine lexer.
@@ -120,13 +123,16 @@ pub enum LexerAction {
     Stop,
 }
 
-#[derive(Debug, Error)]
+/// A type that enumerates possible errors caused while lexing.
+#[derive(Debug, Error, Copy, Clone)]
 pub enum LexerError {
-    #[error("")]
+    /// There was no word index set when attempting to emit a word.
+    #[error("There was no word index set when attempting to emit a word")]
     NoWordIndex,
 }
 
 /// Store initial state for a lexer so that it can be reused easily.
+#[derive(Debug)]
 pub struct Lexer<IC, LS, T>
 where
     IC: InputClass,
