@@ -1,33 +1,91 @@
+//! # `fsm-lexer`
+//!
+//! A finite state machine lexer.
+
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use thiserror::Error;
 
+/// A trait for taking input and classifying it in a user-defined way.
+///
+/// # Examples
+///
+/// ```rust
+/// # use crate::fsm_lexer::InputClass;
+/// # use std::fmt::Debug;
+/// #[derive(Debug, Copy)]
+/// enum DigitClass {
+///     Digit,
+///     Other,
+/// }
+///
+/// impl InputClass for DigitClass {
+///     fn classify(c: char) -> Self {
+///         use DigitClass::*;
+///         match c {
+///             '0'..='9' => Digit,
+///             _ => Other,
+///         }
+///     }
+/// }
+/// ```
 pub trait InputClass: Debug + Copy + Sized {
+    /// Classify a character.
+    ///
+    /// The output of this function is used alongside the current lexer state in
+    /// the [`StateTransitionTable`] to determine what [`LexerAction`] to take,
+    /// and what the next state will be.
     fn classify(c: char) -> Self;
 }
 
+/// A trait for generating tokens from a [`String`].
+/// The two generation functions (`emit` and `append`) handle two different
+/// cases.
 pub trait Token<LS>: Sized
 where LS: Debug + Copy,
 {
+    /// Create a new token from a [`String`] and the current state.
     fn emit(s: String, state: LS) -> Self;
+    /// Update the previous token (`last`) if applicable and return `None`.
+    /// If not, create a new token.
+    ///
+    /// While it is not expected that `last` will be modified and a new token
+    /// will be returned in the same call, this use case is permitted.
     fn append(s: String, state: LS, last: Option<&mut Self>) -> Option<Self>;
 }
 
+/// A trait to be implemented by the lexer state describing how the state should
+/// transition based on the current state and the current input class, and what
+/// action the lexer should take as a result.
 pub trait StateTransitionTable<IC>: Debug + Copy
 where
     IC: InputClass,
 {
+    /// Given the current state (`self`) and an input class (if applicable),
+    /// return the new lexer state and a [`LexerAction`] to be taken.
+    ///
+    /// At the end of the input string, `class` is `None`.
     fn transition(self, class: Option<IC>) -> (Self, LexerAction);
 }
 
+/// An enum containing actions that the lexer can take after parsing a character.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum LexerAction {
+    /// Perform no action.
     NoAction,
+    /// Update the word index to the current index.
     Advance,
+    /// Emit a word, and then update the word index to the current index.
     EmitAndAdvance,
+    /// Emit a word, and then reset the word index to `None`.
     EmitAndReset,
+    /// Append to the last word if applicable, and then update the word index to
+    /// the current index.
     AppendAndAdvance,
+    /// Append to the last word if applicable, and then reset the word index to
+    /// `None`.
     AppendAndReset,
+    /// Stop the lexer.
     Stop,
 }
 
@@ -37,13 +95,19 @@ pub enum LexerError {
     NoWordIndex,
 }
 
+/// Store initial state for a lexer so that it can be reused easily.
 pub struct Lexer<IC, LS, T>
 where
     IC: InputClass,
     LS: StateTransitionTable<IC>,
-    T: Token,
+    T: Token<LS>,
 {
+    /// The starting state of the lexer.
     initial_state: LS,
+    /// The starting word index of the lexer.
+    ///
+    /// Recommended to be either `Some(0)` or `None`.
+    initial_word_index: Option<usize>,
     phantom: PhantomData<(IC, T)>,
 }
 
@@ -53,13 +117,27 @@ where
     LS: StateTransitionTable<IC>,
     T: Token<LS>,
 {
+    /// Create a new lexer with the specified initial state.
+    /// The initial word index will be `Some(0)`.
     pub fn new(initial_state: LS) -> Self {
         Self {
             initial_state,
+            initial_word_index: Some(0),
             phantom: PhantomData,
         }
     }
 
+    /// Create a new lexer with the specified initial state and word index.
+    pub fn with_initial_word_index(initial_state: LS, initial_word_index: Option<usize>) -> Self {
+        Self {
+            initial_state,
+            initial_word_index,
+            phantom: PhantomData
+        }
+    }
+
+    /// Process a [`&str`] according to the input classifier `IC`, state
+    /// transition table `LS`, and the tokeniser `T`.
     pub fn lex(&self, input: &str) -> Result<Vec<T>, LexerError> {
         use LexerAction::*;
         use LexerError::*;
@@ -67,7 +145,7 @@ where
         let input: Vec<char> = input.chars().collect();
 
         let mut current_index = 0;
-        let mut word_index = Some(0);
+        let mut word_index = self.initial_word_index;
         let mut current_state = self.initial_state;
 
         let mut output = Vec::new();
