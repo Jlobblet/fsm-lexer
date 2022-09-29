@@ -41,7 +41,7 @@ use thiserror::Error;
 /// ```rust
 /// # use crate::fsm_lexer::InputClass;
 /// # use std::fmt::Debug;
-/// #[derive(Debug, Copy)]
+/// #[derive(Debug, Copy, Clone)]
 /// enum DigitClass {
 ///     Digit,
 ///     Other,
