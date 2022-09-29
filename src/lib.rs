@@ -1,6 +1,6 @@
 //! # `fsm-lexer`
 //!
-//! A finite state machine lexer.
+//! A finite state (Mealy) machine lexer.
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
