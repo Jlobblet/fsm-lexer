@@ -97,6 +97,8 @@ where
 }
 
 /// An enum containing actions that the lexer can take after parsing a character.
+// Users do not have to use all of the possible lexer actions.
+#[allow(unused)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum LexerAction {
     /// Perform no action.
