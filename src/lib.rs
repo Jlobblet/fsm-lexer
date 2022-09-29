@@ -72,10 +72,7 @@ pub trait InputClass: Debug + Copy + Sized {
 /// A trait for generating tokens from a [`String`].
 /// The two generation functions (`emit` and `append`) handle two different
 /// cases.
-pub trait Token<LS>: Sized
-where
-    LS: Debug + Copy,
-{
+pub trait Token<LS: Debug + Copy>: Sized {
     /// Create a new token from a [`String`] and the current state.
     fn emit(s: String, state: LS) -> Self;
     /// Update the previous token (`last`) if applicable and return `None`.
@@ -89,10 +86,7 @@ where
 /// A trait to be implemented by the lexer state describing how the state should
 /// transition based on the current state and the current input class, and what
 /// action the lexer should take as a result.
-pub trait StateTransitionTable<IC>: Debug + Copy
-where
-    IC: InputClass,
-{
+pub trait StateTransitionTable<IC: InputClass>: Debug + Copy {
     /// Given the current state (`self`) and an input class (if applicable),
     /// return the new lexer state and a [`LexerAction`] to be taken.
     ///
@@ -133,12 +127,7 @@ pub enum LexerError {
 
 /// Store initial state for a lexer so that it can be reused easily.
 #[derive(Debug)]
-pub struct Lexer<IC, LS, T>
-where
-    IC: InputClass,
-    LS: StateTransitionTable<IC>,
-    T: Token<LS>,
-{
+pub struct Lexer<IC: InputClass, LS: StateTransitionTable<IC>, T: Token<LS>> {
     /// The starting state of the lexer.
     initial_state: LS,
     /// The starting word index of the lexer.
@@ -148,12 +137,7 @@ where
     phantom: PhantomData<(IC, T)>,
 }
 
-impl<IC, LS, T> Lexer<IC, LS, T>
-where
-    IC: InputClass,
-    LS: StateTransitionTable<IC>,
-    T: Token<LS>,
-{
+impl<IC: InputClass, LS: StateTransitionTable<IC>, T: Token<LS>> Lexer<IC, LS, T> {
     /// Create a new lexer with the specified initial state.
     /// The initial word index will be `Some(0)`.
     pub fn new(initial_state: LS) -> Self {
