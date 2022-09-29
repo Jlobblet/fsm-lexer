@@ -70,7 +70,8 @@ pub trait InputClass: Debug + Copy + Sized {
 /// The two generation functions (`emit` and `append`) handle two different
 /// cases.
 pub trait Token<LS>: Sized
-where LS: Debug + Copy,
+where
+    LS: Debug + Copy,
 {
     /// Create a new token from a [`String`] and the current state.
     fn emit(s: String, state: LS) -> Self;
@@ -162,7 +163,7 @@ where
         Self {
             initial_state,
             initial_word_index,
-            phantom: PhantomData
+            phantom: PhantomData,
         }
     }
 
