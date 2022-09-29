@@ -6,9 +6,11 @@ pub trait InputClass: Debug + Copy + Sized {
     fn classify(c: char) -> Self;
 }
 
-pub trait Token: Sized {
-    fn emit(s: String) -> Self;
-    fn append(s: String, last: Option<&mut Self>) -> Option<Self>;
+pub trait Token<LS>: Sized
+where LS: Debug + Copy,
+{
+    fn emit(s: String, state: LS) -> Self;
+    fn append(s: String, state: LS, last: Option<&mut Self>) -> Option<Self>;
 }
 
 pub trait StateTransitionTable<IC>: Debug + Copy
@@ -49,7 +51,7 @@ impl<IC, LS, T> Lexer<IC, LS, T>
 where
     IC: InputClass,
     LS: StateTransitionTable<IC>,
-    T: Token,
+    T: Token<LS>,
 {
     pub fn new(initial_state: LS) -> Self {
         Self {
@@ -87,11 +89,11 @@ where
                     let word_index = word_index.ok_or(NoWordIndex)?;
                     let text: String = input[word_index..current_index].iter().collect();
                     if action == AppendAndAdvance || action == AppendAndReset {
-                        if let Some(t) = T::append(text, output.last_mut()) {
+                        if let Some(t) = T::append(text, current_state, output.last_mut()) {
                             output.push(t);
                         }
                     } else {
-                        output.push(T::emit(text));
+                        output.push(T::emit(text, current_state));
                     }
                 }
                 _ => (),
@@ -177,12 +179,12 @@ mod hex_test {
     #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
     struct HexToken(usize);
 
-    impl Token for HexToken {
-        fn emit(s: String) -> Self {
+    impl Token<HexLexerState> for HexToken {
+        fn emit(s: String, _state: HexLexerState) -> Self {
             HexToken(usize::from_str_radix(s.trim_start_matches("0x"), 16).unwrap())
         }
 
-        fn append(_s: String, _last: Option<&mut Self>) -> Option<Self> {
+        fn append(_s: String, _state: HexLexerState, _last: Option<&mut Self>) -> Option<Self> {
             unreachable!()
         }
     }
