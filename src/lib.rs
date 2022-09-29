@@ -1,6 +1,34 @@
 //! # `fsm-lexer`
 //!
 //! A finite state (Mealy) machine lexer.
+//!
+//! # How to Use
+//!
+//! To create a lexer using this crate, you should:
+//!
+//! 1. Implement the trait [`InputClass`] for a data type of your choosing.
+//!    Typically this would be an `enum` of the different states you wish to
+//!    process, but it could be anything.
+//!
+//!    As part of implementing this trait, implement the [`InputClass::classify`]
+//!    function, which takes a single [`char`] and maps it to a class.
+//!
+//! 2. Implement the trait [`StateTransitionTable`] on a data type describing
+//!    the current machine state. Again, this would typically be an `enum` of
+//!    the possible states, but it could be anything.
+//!
+//!    The [`StateTransitionTable::transition`] function describes how a given
+//!    current state and input class pair should map to a new state and what
+//!    action the lexer should take at this step.
+//!
+//! 3. Implement the trait [`Token`] for a data type containing the potential
+//!    output types of your lexer. As with the others, it would typically be an
+//!    `enum` but could be anything. The output of [`Lexer::lex`] on success
+//!    will contain a [`Vec<Token>`] for a given [`Token`] implementor.
+//!
+//!    The [`Token::emit`] function creates a new token from the given [`String`]
+//!    and state of the lexer, whereas [`Token::append`] should attempt to
+//!    combine this token with the prior one, if applicable.
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
