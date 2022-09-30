@@ -1,6 +1,7 @@
 #![deny(invalid_doc_attributes, missing_docs, unused_doc_comments)]
 #![forbid(unsafe_code)]
 #![deny(missing_copy_implementations, missing_debug_implementations)]
+#![feature(test)]
 //! # `fsm-lexer`
 //!
 //! A finite state (Mealy) machine lexer.
@@ -44,6 +45,7 @@
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::str::CharIndices;
 use thiserror::Error;
 
 /// A trait for taking input and classifying it in a user-defined way.
@@ -253,8 +255,130 @@ where
     }
 }
 
+#[derive(Debug)]
+/// DOCS: TODO
+pub struct LexerIterator<'a, IC, STT, T>
+where
+    IC: InputClassifier,
+    STT: StateTransitionTable<IC::InputClass>,
+    T: Tokeniser<STT::LexerState>,
+{
+    input: &'a str,
+    source: CharIndices<'a>,
+    word_index: Option<usize>,
+    current_state: STT::LexerState,
+    finished: bool,
+    next_word: Option<T::Token>,
+    phantom: PhantomData<IC>,
+}
+
+impl<'a, IC, STT, T> Iterator for LexerIterator<'a, IC, STT, T>
+where
+    IC: InputClassifier,
+    STT: StateTransitionTable<IC::InputClass>,
+    T: Tokeniser<STT::LexerState>,
+{
+    type Item = T::Token;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        use LexerAction::*;
+        use LexerError::*;
+
+        let mut ret = self.next_word.take();
+
+        if self.finished {
+            return ret;
+        }
+
+        loop {
+            let (current_index, class) = match self.source.next() {
+                None => (self.input.len(), None),
+                Some((i, c)) => (i, Some(IC::classify(c))),
+            };
+
+            let (next_state, action) = STT::transition(self.current_state, class);
+
+            if action == Stop {
+                self.finished = true;
+                break;
+            }
+
+            // Emit words
+            match action {
+                EmitAndAdvance | EmitAndReset | AppendAndAdvance | AppendAndReset => {
+                    let word_index = self.word_index.expect("No word index when trying to emit a word");
+                    let text = &self.input[word_index..current_index];
+                    if action == AppendAndAdvance || action == AppendAndReset {
+                        // try to append to current return word
+                        let ow = T::append(text, self.current_state, ret.as_mut());
+                        if ret.is_none() {
+                            ret = ow;
+                        } else {
+                            self.next_word = ow;
+                        }
+                    } else {
+                        let w = Some(T::emit(text, self.current_state));
+                        if ret.is_none() {
+                            ret = w;
+                        } else {
+                            self.next_word = w;
+                        }
+                    }
+                }
+                _ => (),
+            }
+
+            // Update word index
+            match action {
+                Advance | EmitAndAdvance | AppendAndAdvance => self.word_index = Some(current_index),
+                EmitAndReset | AppendAndReset => self.word_index = None,
+                _ => (),
+            }
+
+            self.current_state = next_state;
+
+            // Stop if we have reached the end of the string
+            // We check at the end of the loop because need to process end of
+            // string for any final actions in the STT.
+            if class.is_none() || self.next_word.is_some() {
+                break;
+            }
+        }
+
+        ret
+    }
+}
+
+impl<'a, IC, STT, T> std::iter::FusedIterator for LexerIterator<'a, IC, STT, T>
+where
+    IC: InputClassifier,
+    STT: StateTransitionTable<IC::InputClass>,
+    T: Tokeniser<STT::LexerState>,
+{}
+
+/// todo
+pub fn lex<IC, STT, T>(input: &str, initial_state: STT::LexerState) -> LexerIterator<'_, IC, STT, T>
+where
+    IC: InputClassifier,
+    STT: StateTransitionTable<IC::InputClass>,
+    T: Tokeniser<STT::LexerState>,
+{
+    LexerIterator {
+        input,
+        source: input.char_indices(),
+        word_index: Some(0),
+        current_state: initial_state,
+        finished: false,
+        next_word: None,
+        phantom: PhantomData
+    }
+}
+
 #[cfg(test)]
 mod hex_test {
+    extern crate test;
+    use test::Bencher;
+    use crate::hex_test::HexLexerState::WaitingForZero;
     use super::*;
 
     #[derive(Debug, Copy, Clone)]
@@ -327,10 +451,13 @@ mod hex_test {
     struct HexTokeniser;
 
     impl Tokeniser<HexLexerState> for HexTokeniser {
-        type Token = usize;
+        type Token = u128;
 
         fn emit(s: &str, _state: HexLexerState) -> Self::Token {
-            usize::from_str_radix(s.trim_start_matches("0x"), 16).unwrap()
+            match Self::Token::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16) {
+                Ok(u) => u,
+                Err(e) => panic!("Error trying to parse {s} ({}): {e}", s.trim_start_matches("0x")),
+            }
         }
 
         fn append(
@@ -368,9 +495,23 @@ mod hex_test {
     fn multiple_embedded() {
         let lexer = get_lexer();
         let input = "qqq0x30x30x40x0xxxx";
-        let mut numbers = lexer.lex(input).unwrap().into_iter().fuse();
+        let mut numbers = lex::<HexInputClass, HexLexerState, HexTokeniser>(input, WaitingForZero);
         assert_eq!(numbers.next(), Some(48));
         assert_eq!(numbers.next(), Some(64));
         assert_eq!(numbers.next(), None);
+    }
+
+    #[bench]
+    fn bench_1m(b: &mut Bencher) {
+        let lexer = get_lexer();
+        let input = include_str!("1m.txt");
+        b.iter(|| lex::<HexInputClass, HexLexerState, HexTokeniser>(input, WaitingForZero).for_each(|_| ()));
+    }
+
+    #[bench]
+    fn bench_10k(b: &mut Bencher) {
+        let lexer = get_lexer();
+        let input = include_str!("10k.txt");
+        b.iter(|| lexer.lex(input).ok());
     }
 }
