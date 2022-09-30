@@ -32,6 +32,15 @@
 //!    The [`Token::emit`] function creates a new token from the given [`String`]
 //!    and state of the lexer, whereas [`Token::append`] should attempt to
 //!    combine this token with the prior one, if applicable.
+//!
+//! # Motivations
+//!
+//! This crate uses traits to provide functions to the lexer. This is so that
+//! the functions can be resolved at compile time via monomorphisation rather
+//! than being passed as boxed trait objects (for the [`Fn`] trait) at runtime.
+//!
+//! An alternate implementation could use the same principles but via boxed
+//! functions. I preferred the trait approach, which is why I used it.
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -42,7 +51,7 @@ use thiserror::Error;
 /// # Examples
 ///
 /// ```rust
-/// # use crate::fsm_lexer::InputClass;
+/// # use crate::fsm_lexer::InputClassifier;
 /// # use std::fmt::Debug;
 /// #[derive(Debug, Copy, Clone)]
 /// enum DigitClass {
@@ -50,8 +59,10 @@ use thiserror::Error;
 ///     Other,
 /// }
 ///
-/// impl InputClass for DigitClass {
-///     fn classify(c: char) -> Self {
+/// impl InputClassifier for DigitClass {
+///     type InputClass = Self;
+///
+///     fn classify(c: char) -> Self::InputClass {
 ///         use DigitClass::*;
 ///         match c {
 ///             '0'..='9' => Digit,
@@ -60,38 +71,49 @@ use thiserror::Error;
 ///     }
 /// }
 /// ```
-pub trait InputClass: Debug + Copy + Sized {
+pub trait InputClassifier: Debug {
+    /// The type produced by the input classifier.
+    /// In general, this is often `Self` or `Option<Self>`.
+    type InputClass: Debug + Copy + Sized;
+
     /// Classify a character.
     ///
     /// The output of this function is used alongside the current lexer state in
     /// the [`StateTransitionTable`] to determine what [`LexerAction`] to take,
     /// and what the next state will be.
-    fn classify(c: char) -> Self;
+    fn classify(c: char) -> Self::InputClass;
 }
 
 /// A trait for generating tokens from a [`String`].
 /// The two generation functions (`emit` and `append`) handle two different
 /// cases.
-pub trait Token<LS: Debug + Copy>: Sized {
+pub trait Tokeniser<LS: Debug>: Sized {
+    /// The token type produced by the tokeniser.
+    /// This may be `Self`, or some other type such as `String` or `usize`.
+    type Token: Debug + Clone;
+
     /// Create a new token from a [`String`] and the current state.
-    fn emit(s: String, state: LS) -> Self;
+    fn emit(s: &str, state: LS) -> Self::Token;
     /// Update the previous token (`last`) if applicable and return `None`.
     /// If not, create a new token.
     ///
     /// While it is not expected that `last` will be modified and a new token
     /// will be returned in the same call, this use case is permitted.
-    fn append(s: String, state: LS, last: Option<&mut Self>) -> Option<Self>;
+    fn append(s: &str, state: LS, last: Option<&mut Self::Token>) -> Option<Self::Token>;
 }
 
 /// A trait to be implemented by the lexer state describing how the state should
 /// transition based on the current state and the current input class, and what
 /// action the lexer should take as a result.
-pub trait StateTransitionTable<IC: InputClass>: Debug + Copy {
+pub trait StateTransitionTable<IC: Debug>: Debug {
+    /// The type representing the current lexer state, usually an `enum`.
+    type LexerState: Debug + Copy;
+
     /// Given the current state (`self`) and an input class (if applicable),
     /// return the new lexer state and a [`LexerAction`] to be taken.
     ///
     /// At the end of the input string, `class` is `None`.
-    fn transition(self, class: Option<IC>) -> (Self, LexerAction);
+    fn transition(state: Self::LexerState, class: Option<IC>) -> (Self::LexerState, LexerAction);
 }
 
 /// An enum containing actions that the lexer can take after parsing a character.
@@ -127,9 +149,14 @@ pub enum LexerError {
 
 /// Store initial state for a lexer so that it can be reused easily.
 #[derive(Debug)]
-pub struct Lexer<IC: InputClass, LS: StateTransitionTable<IC>, T: Token<LS>> {
+pub struct Lexer<IC, STT, T>
+where
+    IC: InputClassifier,
+    STT: StateTransitionTable<IC::InputClass>,
+    T: Tokeniser<STT::LexerState>,
+{
     /// The starting state of the lexer.
-    initial_state: LS,
+    initial_state: STT::LexerState,
     /// The starting word index of the lexer.
     ///
     /// Recommended to be either `Some(0)` or `None`.
@@ -137,10 +164,15 @@ pub struct Lexer<IC: InputClass, LS: StateTransitionTable<IC>, T: Token<LS>> {
     phantom: PhantomData<(IC, T)>,
 }
 
-impl<IC: InputClass, LS: StateTransitionTable<IC>, T: Token<LS>> Lexer<IC, LS, T> {
+impl<IC, STT, T> Lexer<IC, STT, T>
+where
+    IC: InputClassifier,
+    STT: StateTransitionTable<IC::InputClass>,
+    T: Tokeniser<STT::LexerState>,
+{
     /// Create a new lexer with the specified initial state.
     /// The initial word index will be `Some(0)`.
-    pub fn new(initial_state: LS) -> Self {
+    pub fn new(initial_state: STT::LexerState) -> Self {
         Self {
             initial_state,
             initial_word_index: Some(0),
@@ -149,7 +181,10 @@ impl<IC: InputClass, LS: StateTransitionTable<IC>, T: Token<LS>> Lexer<IC, LS, T
     }
 
     /// Create a new lexer with the specified initial state and word index.
-    pub fn with_initial_word_index(initial_state: LS, initial_word_index: Option<usize>) -> Self {
+    pub fn with_initial_word_index(
+        initial_state: STT::LexerState,
+        initial_word_index: Option<usize>,
+    ) -> Self {
         Self {
             initial_state,
             initial_word_index,
@@ -158,25 +193,24 @@ impl<IC: InputClass, LS: StateTransitionTable<IC>, T: Token<LS>> Lexer<IC, LS, T
     }
 
     /// Process a [`&str`] according to the input classifier `IC`, state
-    /// transition table `LS`, and the tokeniser `T`.
-    pub fn lex(&self, input: &str) -> Result<Vec<T>, LexerError> {
+    /// transition table `STT`, and the tokeniser `T`.
+    pub fn lex(&self, input: &str) -> Result<Vec<T::Token>, LexerError> {
         use LexerAction::*;
         use LexerError::*;
 
-        let input: Vec<char> = input.chars().collect();
+        let mut cis = input.char_indices();
 
-        let mut current_index = 0;
         let mut word_index = self.initial_word_index;
         let mut current_state = self.initial_state;
 
         let mut output = Vec::new();
-        while current_index <= input.len() {
-            let class = if current_index < input.len() {
-                Some(IC::classify(input[current_index]))
-            } else {
-                None
+
+        loop {
+            let (current_index, class) = match cis.next() {
+                Some((i, c)) => (i, Some(IC::classify(c))),
+                None => (input.len(), None),
             };
-            let (next_state, action) = current_state.transition(class);
+            let (next_state, action) = STT::transition(current_state, class);
 
             if action == Stop {
                 break;
@@ -186,7 +220,7 @@ impl<IC: InputClass, LS: StateTransitionTable<IC>, T: Token<LS>> Lexer<IC, LS, T
             match action {
                 EmitAndAdvance | EmitAndReset | AppendAndAdvance | AppendAndReset => {
                     let word_index = word_index.ok_or(NoWordIndex)?;
-                    let text: String = input[word_index..current_index].iter().collect();
+                    let text = &input[word_index..current_index];
                     if action == AppendAndAdvance || action == AppendAndReset {
                         if let Some(t) = T::append(text, current_state, output.last_mut()) {
                             output.push(t);
@@ -205,8 +239,14 @@ impl<IC: InputClass, LS: StateTransitionTable<IC>, T: Token<LS>> Lexer<IC, LS, T
                 _ => (),
             }
 
+            // Stop if we have reached the end of the string
+            // We check at the end of the loop because need to process end of
+            // string for any final actions in the STT.
+            if class.is_none() {
+                break;
+            }
+
             current_state = next_state;
-            current_index += 1;
         }
 
         Ok(output)
@@ -225,8 +265,11 @@ mod hex_test {
         Other,
     }
 
-    impl InputClass for HexInputClass {
-        fn classify(c: char) -> Self {
+    impl InputClassifier for HexInputClass {
+        type InputClass = Self;
+
+        #[inline]
+        fn classify(c: char) -> Self::InputClass {
             use HexInputClass::*;
             match c {
                 '0' => Zero,
@@ -246,12 +289,17 @@ mod hex_test {
     }
 
     impl StateTransitionTable<HexInputClass> for HexLexerState {
-        fn transition(self, class: Option<HexInputClass>) -> (Self, LexerAction) {
+        type LexerState = Self;
+
+        fn transition(
+            state: Self::LexerState,
+            class: Option<HexInputClass>,
+        ) -> (Self::LexerState, LexerAction) {
             use HexInputClass::*;
             use HexLexerState::*;
             use LexerAction::*;
 
-            match self {
+            match state {
                 WaitingForZero => match class {
                     Some(Zero) => (ExpectingX, Advance),
                     _ => (WaitingForZero, NoAction),
@@ -275,20 +323,26 @@ mod hex_test {
         }
     }
 
-    #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
-    struct HexToken(usize);
+    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    struct HexTokeniser;
 
-    impl Token<HexLexerState> for HexToken {
-        fn emit(s: String, _state: HexLexerState) -> Self {
-            HexToken(usize::from_str_radix(s.trim_start_matches("0x"), 16).unwrap())
+    impl Tokeniser<HexLexerState> for HexTokeniser {
+        type Token = usize;
+
+        fn emit(s: &str, _state: HexLexerState) -> Self::Token {
+            usize::from_str_radix(s.trim_start_matches("0x"), 16).unwrap()
         }
 
-        fn append(_s: String, _state: HexLexerState, _last: Option<&mut Self>) -> Option<Self> {
+        fn append(
+            _s: &str,
+            _state: HexLexerState,
+            _last: Option<&mut Self::Token>,
+        ) -> Option<Self::Token> {
             unreachable!()
         }
     }
 
-    fn get_lexer() -> Lexer<HexInputClass, HexLexerState, HexToken> {
+    fn get_lexer() -> Lexer<HexInputClass, HexLexerState, HexTokeniser> {
         Lexer::new(HexLexerState::WaitingForZero)
     }
 
@@ -297,7 +351,7 @@ mod hex_test {
         let lexer = get_lexer();
         let input = "0x1234";
         let mut numbers = lexer.lex(input).unwrap().into_iter().fuse();
-        assert_eq!(numbers.next(), Some(HexToken(4660)));
+        assert_eq!(numbers.next(), Some(4660));
         assert_eq!(numbers.next(), None);
     }
 
@@ -306,7 +360,7 @@ mod hex_test {
         let lexer = get_lexer();
         let input = "qqqqq0x1234qqqqq";
         let mut numbers = lexer.lex(input).unwrap().into_iter().fuse();
-        assert_eq!(numbers.next(), Some(HexToken(4660)));
+        assert_eq!(numbers.next(), Some(4660));
         assert_eq!(numbers.next(), None);
     }
 
@@ -315,8 +369,8 @@ mod hex_test {
         let lexer = get_lexer();
         let input = "qqq0x30x30x40x0xxxx";
         let mut numbers = lexer.lex(input).unwrap().into_iter().fuse();
-        assert_eq!(numbers.next(), Some(HexToken(48)));
-        assert_eq!(numbers.next(), Some(HexToken(64)));
+        assert_eq!(numbers.next(), Some(48));
+        assert_eq!(numbers.next(), Some(64));
         assert_eq!(numbers.next(), None);
     }
 }
